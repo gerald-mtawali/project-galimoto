@@ -24,9 +24,9 @@ go.work
 /dist/
 
 # Executable files
-main
-server
-api-server
+/main
+/server
+/api-server
 *.bin
 
 # Environment variables
