@@ -8,15 +8,37 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"sync"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // a response struct to map response from API
-type Response struct {
-	Data string `json:"data"`
+
+type Session struct {
+	CircuitKey       int    `json:"circuit_key"`
+	CircuitShortName string `json:"circuit_short_name"`
+	CountryCode      string `json:"country_code"`
+	CountryKey       int    `json:"country_key"`
+	CountryName      string `json:"country_name"`
+	DateEnd          string `json:"date_end"`
+	DateStart        string `json:"date_start"`
+	Location         string `json:"location"`
+	MeetingKey       int    `json:"meeting_key"`
+	SessionKey       int    `json:"session_key"`
+	SessionName      string `json:"session_name"`
+	SessionType      string `json:"session_type"`
+	Year             int    `json:"year"`
 }
 
-// A lap struct to map Laps to
+var (
+	sessionsCache  = make(map[int]Session)
+	nextSessionKey int
+	sessionsMu     sync.Mutex
+)
+
 type Lap struct {
 	MeetingKey   int       `json:"meeting_key"`
 	SessionKey   int       `json:"session_key"`
@@ -36,9 +58,9 @@ type Lap struct {
 	StSpeed      *int      `json:"st_speed"`
 }
 
-func main() {
-	const BASE_URL = "https://api.openf1.org/v1"
-	response, err := http.Get(fmt.Sprintf("%s/laps?session_key=9158&driver_number=16&lap_number=1", BASE_URL))
+func getLapInfo(BaseUrl string) {
+	// const BASE_URL = "https://api.openf1.org/v1"
+	response, err := http.Get(fmt.Sprintf("%s/laps?session_key=9158&driver_number=16&lap_number=1", BaseUrl))
 	if err != nil {
 		fmt.Println(err.Error())
 		os.Exit(1)
@@ -127,4 +149,112 @@ func main() {
 		fmt.Printf("Segments Sector 2: %v\n", lap.SegmentsS2)
 		fmt.Printf("Segments Sector 3: %v\n", lap.SegmentsS3)
 	}
+}
+
+func fetchSessions(BaseUrl string) ([]Session, error) {
+	if BaseUrl == "" {
+		fmt.Println("BaseUrl is empty, unable to make request")
+		return nil, fmt.Errorf("baseUrl is empty, unable to make request")
+	}
+	response, urlErr := http.Get(fmt.Sprintf("%s/sessions", BaseUrl))
+	if urlErr != nil {
+		fmt.Println("Error fetching sessions: ", urlErr)
+		return nil, fmt.Errorf("error fetching sessions %d", urlErr)
+	}
+	// always make sure to close the response body
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		log.Fatalf("API Response Status Code: %d", response.StatusCode)
+		return nil, fmt.Errorf("Response Status Code: %d", response.StatusCode)
+	}
+
+	responseData, responseErr := io.ReadAll(response.Body)
+	if responseErr != nil {
+		fmt.Println("Error reading response body: ", responseErr)
+		return nil, fmt.Errorf("error reading response body: %s", responseErr)
+	}
+
+	var sessions []Session
+	err := json.Unmarshal(responseData, &sessions)
+	if err != nil {
+		fmt.Println("Error unmarshalling response data: ", err)
+		return nil, fmt.Errorf("error unmarshalling response data: %s", err)
+	}
+	return sessions, nil
+}
+
+// Session Handlers
+func sessionsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		handleGetSessions(w, r)
+	default:
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+	}
+}
+
+func sessionHandler(w http.ResponseWriter, r *http.Request) {
+	// extract the sessionKey from the URL path
+	id, err := strconv.Atoi(r.URL.Path[len("/sessions/"):])
+	if err != nil {
+		http.Error(w, "Invalid session Key Id", http.StatusBadRequest)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		handleGetSession(w, r, id)
+	default:
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+	}
+}
+
+// business logic of the handler methods
+func handleGetSessions(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Handling our /sessions gets")
+	w.Header().Set("Content-Type", "application/json")
+
+	// fetch our session data from our openf1 api
+	openF1Url := os.Getenv("OPENF1_API_URL")
+
+	sessions, err := fetchSessions(openF1Url)
+	if err != nil {
+		http.Error(w, "Error fetching sessions", http.StatusInternalServerError)
+		return
+	}
+
+	// An optional operation is to cache the session info
+	sessionsMu.Lock()
+	// defer sessionsMu.Unlock()
+	for _, session := range sessions {
+		sessionsCache[session.SessionKey] = session
+	}
+	sessionsMu.Unlock()
+	// encode and send response
+	if err := json.NewEncoder(w).Encode(sessions); err != nil {
+		log.Printf("Error encoding sessions: %v", err)
+		http.Error(w, "error encoding response", http.StatusInternalServerError)
+		return
+	}
+}
+
+func handleGetSession(w http.ResponseWriter, r *http.Request, id int) {
+	fmt.Println("Handling our /sessions/:id gets")
+}
+
+func main() {
+	err := godotenv.Load("./.env")
+	if err != nil {
+		log.Fatal("Error loading .env file: ", err)
+	}
+	// openF1Url := os.Getenv("OPENF1_API_URL")
+	// getLapInfo(openF1Url)
+
+	http.HandleFunc("/sessions", sessionsHandler)
+	http.HandleFunc("/sessions/", sessionHandler)
+	apiUrl := os.Getenv("API_URL")
+	apiPort := os.Getenv("API_PORT")
+	fmt.Printf("Server is running at %s:%s\n", apiUrl, apiPort)
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
