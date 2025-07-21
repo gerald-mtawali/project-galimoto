@@ -66,7 +66,6 @@ type PaginationConfig struct {
 }
 
 type KeyOnlyConfig struct {
-	KeysOnly    string
 	HasKeysOnly bool
 }
 
@@ -104,20 +103,16 @@ func ParsePaginationFromRequest(r *http.Request) (PaginationConfig, error) {
 	return config, nil
 }
 
-func ParseKeysOnly (r *http.Request) (KeyOnlyConfig, error){
+func ParseKeysOnlyFromRequest(r *http.Request) (KeyOnlyConfig, error) {
 	keyStr := r.URL.Query().Get("keysOnly")
 	KeyConfig := KeyOnlyConfig{}
-	
-	if keyStr == "" {
-		return KeyConfig, nil 
+
+	if keyStr != "true" {
+		KeyConfig.HasKeysOnly = false
+		return KeyConfig, nil
 	}
-	KeyConfig.HasKeysOnly = true 
-	
-	if KeyStr != "" {
-		
-		
-	}
-	
+	KeyConfig.HasKeysOnly = true
+	return KeyConfig, nil
 }
 
 func fetchSessions(BaseUrl string) ([]Session, error) {
@@ -172,6 +167,17 @@ func FindSessionById(sessions []Session, id int) *Session {
 	return nil
 }
 
+func parseIntParam(param string, defaultValue int) (int, error) {
+	// parse query params as ints
+	if param == "" {
+		return defaultValue, nil
+	}
+	return strconv.Atoi(param)
+}
+
+// TODO: create a method that will extract only the keys from the list of sessions
+// func FetchSessionKeysOnly(sessions []Session) ([]int, err)
+
 // Session Handlers
 func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 	// extract optional parameters skip & limit
@@ -208,6 +214,12 @@ func handleGetSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query parameters", http.StatusBadRequest)
 		return
 	}
+	// TODO: complete KeyConfig inclusion
+	// KeyConfig, err := ParseKeysOnlyFromRequest(r)
+	// if err != nil {
+	// 	http.Error(w, "invalid query:key parameters", http.StatusBadRequest)
+	// 	return
+	// }
 
 	if PageConfig.HasPagination {
 		handleGetSessionsWithPagination(w, r, PageConfig.Skip, PageConfig.Limit)
@@ -215,14 +227,6 @@ func handleGetSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	// if the skip and limit are empty strings then we just return without pagination
 	handleSessionsNoPagination(w, r)
-}
-
-func parseIntParam(param string, defaultValue int) (int, error) {
-	// parse query params as ints
-	if param == "" {
-		return defaultValue, nil
-	}
-	return strconv.Atoi(param)
 }
 
 func handleSessionsNoPagination(w http.ResponseWriter, r *http.Request) {
