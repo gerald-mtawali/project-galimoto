@@ -58,97 +58,66 @@ type Lap struct {
 	StSpeed      *int      `json:"st_speed"`
 }
 
-func getLapInfo(BaseUrl string) {
-	// const BASE_URL = "https://api.openf1.org/v1"
-	response, err := http.Get(fmt.Sprintf("%s/laps?session_key=9158&driver_number=16&lap_number=1", BaseUrl))
-	if err != nil {
-		fmt.Println(err.Error())
-		os.Exit(1)
+// while we're able to use the multiple instances, we'll need a more improved way to perform operator overloading
+type PaginationConfig struct {
+	Skip          int
+	Limit         int
+	HasPagination bool
+}
+
+type KeyOnlyConfig struct {
+	KeysOnly    string
+	HasKeysOnly bool
+}
+
+// Helper Functions
+func ParsePaginationFromRequest(r *http.Request) (PaginationConfig, error) {
+	// why is everything only a single letter
+	// if there is a skip and limit we return it as a config element
+	skipStr := r.URL.Query().Get("skip")
+	limitStr := r.URL.Query().Get("limit")
+
+	config := PaginationConfig{}
+	if skipStr == "" && limitStr == "" {
+		return config, nil
 	}
-	defer response.Body.Close() // always close response body
-
-	if response.StatusCode != http.StatusOK {
-		log.Fatalf("API request failed with status code %d", response.StatusCode)
+	// now we need to actually parse these values
+	config.HasPagination = true // we know that there is pagination in the request URL
+	if skipStr != "" {
+		// set the value
+		skip, err := parseIntParam(skipStr, 0)
+		if err != nil || skip < 0 {
+			return config, fmt.Errorf("invalid skip parameter")
+		}
+		config.Skip = skip
 	}
 
-	responseData, err := io.ReadAll(response.Body)
-	if err != nil {
-		fmt.Println(err.Error())
-		os.Exit(1)
+	if limitStr != "" {
+		// set the value
+		// liimit
+		limit, err := parseIntParam(limitStr, 100)
+		if err != nil || limit < 0 {
+			return config, fmt.Errorf("invalid limit parameter")
+		}
+		config.Limit = limit
 	}
-	var responseInfo any
+	return config, nil
+}
 
-	err_ := json.Unmarshal(responseData, &responseInfo)
-
-	if err_ != nil {
-		fmt.Println(err_.Error())
-		os.Exit(1)
+func ParseKeysOnly (r *http.Request) (KeyOnlyConfig, error){
+	keyStr := r.URL.Query().Get("keysOnly")
+	KeyConfig := KeyOnlyConfig{}
+	
+	if keyStr == "" {
+		return KeyConfig, nil 
 	}
-
-	var lapData []Lap
-
-	if err := json.Unmarshal(responseData, &lapData); err != nil {
-		log.Fatalf("Error parsing json %s", err.Error())
+	KeyConfig.HasKeysOnly = true 
+	
+	if KeyStr != "" {
+		
+		
 	}
-
-	fmt.Printf("Received %d lap records", len(lapData))
-
-	for i, lap := range lapData {
-		fmt.Printf("\n--- Lap %d ---\n", i+1)
-		fmt.Printf("Meeting Key: %d\n", lap.MeetingKey)
-		fmt.Printf("Session Key: %d\n", lap.SessionKey)
-		fmt.Printf("Driver Number: %d\n", lap.DriverNumber)
-		fmt.Printf("Lap Number: %d\n", lap.LapNumber)
-		fmt.Printf("Date Start: %s\n", lap.DateStart.Format("2006-01-02 15:04:05"))
-		fmt.Printf("Is Pit Out Lap: %t\n", lap.IsPitOutLap)
-
-		// Handle nullable fields safely
-		if lap.DurationS1 != nil {
-			fmt.Printf("Duration Sector 1: %.3f seconds\n", *lap.DurationS1)
-		} else {
-			fmt.Println("Duration Sector 1: null")
-		}
-
-		if lap.DurationS2 != nil {
-			fmt.Printf("Duration Sector 2: %.3f seconds\n", *lap.DurationS2)
-		} else {
-			fmt.Println("Duration Sector 2: null")
-		}
-
-		if lap.DurationS3 != nil {
-			fmt.Printf("Duration Sector 3: %.3f seconds\n", *lap.DurationS3)
-		} else {
-			fmt.Println("Duration Sector 3: null")
-		}
-
-		if lap.LapDuration != nil {
-			fmt.Printf("Lap Duration: %.3f seconds\n", *lap.LapDuration)
-		} else {
-			fmt.Println("Lap Duration: null")
-		}
-
-		if lap.SpeedI1 != nil {
-			fmt.Printf("I1 Speed: %d km/h\n", *lap.SpeedI1)
-		} else {
-			fmt.Println("I1 Speed: null")
-		}
-
-		if lap.SpeedI2 != nil {
-			fmt.Printf("I2 Speed: %d km/h\n", *lap.SpeedI2)
-		} else {
-			fmt.Println("I2 Speed: null")
-		}
-
-		if lap.StSpeed != nil {
-			fmt.Printf("ST Speed: %d km/h\n", *lap.StSpeed)
-		} else {
-			fmt.Println("ST Speed: null")
-		}
-
-		fmt.Printf("Segments Sector 1: %v\n", lap.SegmentsS1)
-		fmt.Printf("Segments Sector 2: %v\n", lap.SegmentsS2)
-		fmt.Printf("Segments Sector 3: %v\n", lap.SegmentsS3)
-	}
+	
 }
 
 func fetchSessions(BaseUrl string) ([]Session, error) {
@@ -184,8 +153,29 @@ func fetchSessions(BaseUrl string) ([]Session, error) {
 	return sessions, nil
 }
 
+func FormatSessions(sessions []Session) string {
+	var formattedSessions string
+	for _, session := range sessions {
+		formattedSessions += fmt.Sprintf("Session ID: %d, Circuit Name: %s\n", session.SessionKey, session.CircuitShortName)
+	}
+	return formattedSessions
+}
+
+func FindSessionById(sessions []Session, id int) *Session {
+	var session *Session
+	for _, s := range sessions {
+		if s.SessionKey == id {
+			session = &s
+			return session
+		}
+	}
+	return nil
+}
+
 // Session Handlers
 func sessionsHandler(w http.ResponseWriter, r *http.Request) {
+	// extract optional parameters skip & limit
+	// these are optional parameters
 	switch r.Method {
 	case http.MethodGet:
 		handleGetSessions(w, r)
@@ -212,6 +202,30 @@ func sessionHandler(w http.ResponseWriter, r *http.Request) {
 // business logic of the handler methods
 func handleGetSessions(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Handling our /sessions gets")
+	// parse the query parameters
+	PageConfig, err := ParsePaginationFromRequest(r)
+	if err != nil {
+		http.Error(w, "invalid query parameters", http.StatusBadRequest)
+		return
+	}
+
+	if PageConfig.HasPagination {
+		handleGetSessionsWithPagination(w, r, PageConfig.Skip, PageConfig.Limit)
+		return
+	}
+	// if the skip and limit are empty strings then we just return without pagination
+	handleSessionsNoPagination(w, r)
+}
+
+func parseIntParam(param string, defaultValue int) (int, error) {
+	// parse query params as ints
+	if param == "" {
+		return defaultValue, nil
+	}
+	return strconv.Atoi(param)
+}
+
+func handleSessionsNoPagination(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// fetch our session data from our openf1 api
@@ -238,8 +252,61 @@ func handleGetSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleGetSessionsWithPagination(w http.ResponseWriter, r *http.Request, skip int, limit int) {
+	// this function is responsible for fetching sessions with pagination
+	log.Print("Getting sessions with pagination")
+	if skip < 0 || limit < 0 {
+		http.Error(w, "Invalid pagination parameters", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	openF1Url := os.Getenv("OPENF1_API_URL")
+	sessions, err := fetchSessions(openF1Url)
+	if err != nil {
+		http.Error(w, "Error fetching session data", http.StatusInternalServerError)
+		return
+	}
+	if skip > len(sessions) {
+		http.Error(w, "Invalid pagination parameters", http.StatusBadRequest)
+		return
+	}
+
+	// starting index is skip
+	// limit is the number we obtain
+	startIndex := skip
+	endIndex := min(startIndex+limit, len(sessions))
+	sessions = sessions[startIndex:endIndex]
+	if err := json.NewEncoder(w).Encode(sessions); err != nil {
+		log.Print("Error encoding sessions: ", err)
+		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+		return
+	}
+}
+
 func handleGetSession(w http.ResponseWriter, r *http.Request, id int) {
 	fmt.Println("Handling our /sessions/:id gets")
+	// fetch the sessions
+	openF1Url := os.Getenv("OPENF1_API_URL")
+
+	sessions, err := fetchSessions(openF1Url)
+	if err != nil {
+		http.Error(w, "Error fetching Sessions", http.StatusInternalServerError)
+		return
+	}
+	session := FindSessionById(sessions, id)
+
+	if session == nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	// encode and send a response
+	if err := json.NewEncoder(w).Encode(session); err != nil {
+		log.Printf("Error encoding session: %v", err)
+		http.Error(w, "error encoding response", http.StatusInternalServerError)
+	}
 }
 
 func main() {
@@ -247,8 +314,6 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file: ", err)
 	}
-	// openF1Url := os.Getenv("OPENF1_API_URL")
-	// getLapInfo(openF1Url)
 
 	http.HandleFunc("/sessions", sessionsHandler)
 	http.HandleFunc("/sessions/", sessionHandler)
