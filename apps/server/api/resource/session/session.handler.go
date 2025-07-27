@@ -1,5 +1,4 @@
-// our go server for fetching data from openf1 API
-package main
+package session
 
 import (
 	"encoding/json"
@@ -9,13 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
-	"time"
-
-	"github.com/joho/godotenv"
 )
-
-// a response struct to map response from API
 
 type Session struct {
 	CircuitKey       int    `json:"circuit_key"`
@@ -33,29 +26,12 @@ type Session struct {
 	Year             int    `json:"year"`
 }
 
-var (
-	sessionsCache  = make(map[int]Session)
-	nextSessionKey int
-	sessionsMu     sync.Mutex
-)
-
-type Lap struct {
-	MeetingKey   int       `json:"meeting_key"`
-	SessionKey   int       `json:"session_key"`
-	DriverNumber int       `json:"driver_number"`
-	LapNumber    int       `json:"lap_number"`
-	DateStart    time.Time `json:"date_start"`
-	DurationS1   *float64  `json:"duration_sector_1"`
-	DurationS2   *float64  `json:"duration_sector_2"`
-	DurationS3   *float64  `json:"duration_sector_3"`
-	SpeedI1      *int      `json:"i1_speed"`
-	SpeedI2      *int      `json:"i2_speed"`
-	IsPitOutLap  bool      `json:"is_pit_out_lap"`
-	LapDuration  *float64  `json:"lap_duration"`
-	SegmentsS1   []int     `json:"segments_sector_1"`
-	SegmentsS2   []int     `json:"segments_sector_2"`
-	SegmentsS3   []int     `json:"segments_sector_3"`
-	StSpeed      *int      `json:"st_speed"`
+type SessionKeysOnly struct {
+	SessionKey       int
+	CircuitKey       int
+	MeetingKey       int
+	CircuitShortName string
+	DateRange        string
 }
 
 // while we're able to use the multiple instances, we'll need a more improved way to perform operator overloading
@@ -101,18 +77,6 @@ func ParsePaginationFromRequest(r *http.Request) (PaginationConfig, error) {
 		config.Limit = limit
 	}
 	return config, nil
-}
-
-func ParseKeysOnlyFromRequest(r *http.Request) (KeyOnlyConfig, error) {
-	keyStr := r.URL.Query().Get("keysOnly")
-	KeyConfig := KeyOnlyConfig{}
-
-	if keyStr != "true" {
-		KeyConfig.HasKeysOnly = false
-		return KeyConfig, nil
-	}
-	KeyConfig.HasKeysOnly = true
-	return KeyConfig, nil
 }
 
 func fetchSessions(BaseUrl string) ([]Session, error) {
@@ -175,11 +139,8 @@ func parseIntParam(param string, defaultValue int) (int, error) {
 	return strconv.Atoi(param)
 }
 
-// TODO: create a method that will extract only the keys from the list of sessions
-// func FetchSessionKeysOnly(sessions []Session) ([]int, err)
-
 // Session Handlers
-func sessionsHandler(w http.ResponseWriter, r *http.Request) {
+func SessionsHandler(w http.ResponseWriter, r *http.Request) {
 	// extract optional parameters skip & limit
 	// these are optional parameters
 	switch r.Method {
@@ -190,7 +151,7 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sessionHandler(w http.ResponseWriter, r *http.Request) {
+func SessionHandler(w http.ResponseWriter, r *http.Request) {
 	// extract the sessionKey from the URL path
 	id, err := strconv.Atoi(r.URL.Path[len("/sessions/"):])
 	if err != nil {
@@ -205,6 +166,16 @@ func sessionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func SessionKeyHandler(w http.ResponseWriter, r *http.Request) {
+	// extract the keys only handler from the
+	switch r.Method {
+	case http.MethodGet:
+		handleGetSessionKeys(w, r)
+	default:
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+	}
+}
+
 // business logic of the handler methods
 func handleGetSessions(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Handling our /sessions gets")
@@ -214,13 +185,6 @@ func handleGetSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query parameters", http.StatusBadRequest)
 		return
 	}
-	// TODO: complete KeyConfig inclusion
-	// KeyConfig, err := ParseKeysOnlyFromRequest(r)
-	// if err != nil {
-	// 	http.Error(w, "invalid query:key parameters", http.StatusBadRequest)
-	// 	return
-	// }
-
 	if PageConfig.HasPagination {
 		handleGetSessionsWithPagination(w, r, PageConfig.Skip, PageConfig.Limit)
 		return
@@ -241,13 +205,13 @@ func handleSessionsNoPagination(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// An optional operation is to cache the session info
-	sessionsMu.Lock()
-	// defer sessionsMu.Unlock()
-	for _, session := range sessions {
-		sessionsCache[session.SessionKey] = session
-	}
-	sessionsMu.Unlock()
+	// // An optional operation is to cache the session info
+	// sessionsMu.Lock()
+	// // defer sessionsMu.Unlock()
+	// for _, session := range sessions {
+	// 	sessionsCache[session.SessionKey] = session
+	// }
+	// sessionsMu.Unlock()
 	// encode and send response
 	if err := json.NewEncoder(w).Encode(sessions); err != nil {
 		log.Printf("Error encoding sessions: %v", err)
@@ -282,6 +246,7 @@ func handleGetSessionsWithPagination(w http.ResponseWriter, r *http.Request, ski
 	startIndex := skip
 	endIndex := min(startIndex+limit, len(sessions))
 	sessions = sessions[startIndex:endIndex]
+
 	if err := json.NewEncoder(w).Encode(sessions); err != nil {
 		log.Print("Error encoding sessions: ", err)
 		http.Error(w, "Error encoding response", http.StatusInternalServerError)
@@ -313,17 +278,83 @@ func handleGetSession(w http.ResponseWriter, r *http.Request, id int) {
 	}
 }
 
-func main() {
-	err := godotenv.Load("./.env")
+func handleGetSessionKeys(w http.ResponseWriter, r *http.Request) {
+	// here we provide the keys of the sessions, and we provide only that
+	log.Print("fetching sessions/keys/ \n")
+	PageConfig, err := ParsePaginationFromRequest(r)
 	if err != nil {
-		log.Fatal("Error loading .env file: ", err)
+		http.Error(w, "invalid query parameters", http.StatusBadRequest)
+	}
+	if PageConfig.HasPagination {
+		handleSessionKeysWithPagination(w, r, PageConfig.Skip, PageConfig.Limit)
+		return
+	}
+	handleSessionKeysNoPagination(w, r)
+}
+
+func handleSessionKeysWithPagination(w http.ResponseWriter, r *http.Request, skip int, limit int) {
+	// fetch session data and return only the keys
+	log.Print("getting sessions/keys with pagination \n")
+	if skip < 0 || limit < 0 {
+		http.Error(w, "invalid pagination parameters", http.StatusBadRequest)
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	openF1Url := os.Getenv("OPENF1_API_URL")
+	sessions, err := fetchSessions(openF1Url)
+	if err != nil {
+		http.Error(w, "Error fetching session data", http.StatusInternalServerError)
+		return
+	}
+	if skip > len(sessions) { // replace with a workaround
+		http.Error(w, "Invalid pagination parameters", http.StatusBadRequest)
+		return
+	}
+	startIndex := skip
+	endIndex := min(startIndex+limit, len(sessions))
+	sessions = sessions[startIndex:endIndex]
+	var keysOnlyList []SessionKeysOnly
+	for _, s := range sessions {
+		keysOnlyList = append(keysOnlyList, SessionKeysOnly{
+			SessionKey:       s.SessionKey,
+			CircuitKey:       s.CircuitKey,
+			MeetingKey:       s.MeetingKey,
+			CircuitShortName: s.CircuitShortName,
+			DateRange:        s.DateStart + " - " + s.DateEnd,
+		})
 	}
 
-	http.HandleFunc("/sessions", sessionsHandler)
-	http.HandleFunc("/sessions/", sessionHandler)
-	apiUrl := os.Getenv("API_URL")
-	apiPort := os.Getenv("API_PORT")
-	fmt.Printf("Server is running at %s:%s\n", apiUrl, apiPort)
+	if err := json.NewEncoder(w).Encode(keysOnlyList); err != nil {
+		log.Printf("Error encoding sessions: %v", err)
+		http.Error(w, "error encoding response", http.StatusInternalServerError)
+		return
+	}
+}
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+func handleSessionKeysNoPagination(w http.ResponseWriter, r *http.Request) {
+	log.Print("fetching sessions/keys/ without pagination")
+	openF1Url := os.Getenv("OPENF1_API_URL")
+
+	sessions, err := fetchSessions(openF1Url)
+	if err != nil {
+		http.Error(w, "error fetching sessions", http.StatusInternalServerError)
+		return
+	}
+
+	var keysOnlyList []SessionKeysOnly
+	for _, s := range sessions {
+		keysOnlyList = append(keysOnlyList, SessionKeysOnly{
+			SessionKey:       s.SessionKey,
+			CircuitKey:       s.CircuitKey,
+			MeetingKey:       s.MeetingKey,
+			CircuitShortName: s.CircuitShortName,
+			DateRange:        s.DateStart + " - " + s.DateEnd,
+		})
+	}
+
+	if err := json.NewEncoder(w).Encode(keysOnlyList); err != nil {
+		log.Printf("Error encoding session keys: %v", err)
+		http.Error(w, "error encoding response", http.StatusInternalServerError)
+		return
+	}
 }
